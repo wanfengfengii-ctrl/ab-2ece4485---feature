@@ -203,6 +203,38 @@ body {
 
 .params input:focus, .params select:focus { outline: none; border-color: var(--cyan); }
 
+.switch-label { grid-column: 1 / -1; }
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.switch-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--cyan);
+}
+
+.switch-row input[type="number"] {
+  width: 72px;
+}
+
+.switch-row em {
+  font-style: normal;
+  color: var(--text-dim);
+}
+
+.refractory-block {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #6b3042;
+  color: var(--yellow);
+}
+
+.refractory-block b { color: #fef3c7; }
+
 .actions {
   display: flex;
   align-items: center;
@@ -334,6 +366,10 @@ tr.divide-row td { color: var(--purple); }
 .badge.divide { color: var(--purple); border-color: var(--purple); }
 .badge.skip { color: var(--warn); border-color: var(--warn); }
 
+/* 分裂年龄列仅在启用不应期时出现，未启用时原证据表保持不变 */
+.age-col { display: none; }
+.refractory-on .age-col { display: table-cell; }
+
 .used-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -349,5 +385,12 @@ tr.divide-row td { color: var(--purple); }
 }
 
 .used-frame b { display: block; margin-bottom: 4px; }
-.used-frame span { color: var(--cyan); margin-right: 6px; }
+.used-frame span { color: var(--cyan); margin-right: 6px; display: inline-block; }
+.used-frame .gen-tag {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-style: normal;
+  margin-left: 2px;
+}
 .used-frame em { color: var(--text-dim); font-style: normal; }
+.used-frame .unused-tag { display: block; margin-top: 4px; color: #7488a0; }

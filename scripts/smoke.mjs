@@ -157,6 +157,171 @@ function checkScenario() {
   log('不可行报告正确：最早断开 第 1 帧 → 第 2 帧');
 }
 
+// 分裂不应期业务烟测：
+//  1) 连续分裂：起始细胞首裂后，女儿须等待门槛帧间才能再分裂；
+//  2) 跨漏检计龄：跨一帧漏检的连接按真实跨度 +2，使女儿恰好成熟可分裂；
+//  3) 所有候选都要求过早再分裂时，保留草稿并报告最早阻断帧间 / 母细胞 / 尚缺帧间。
+function refTracks() {
+  return {
+    frames: [
+      [
+        { id: 'a', x: 5, y: 50, b: 40 },
+        { id: 'z0', x: 90, y: 90, b: 200 },
+      ],
+      [
+        { id: 'b1', x: 12, y: 44, b: 41 },
+        { id: 'b2', x: 12, y: 56, b: 41 },
+        { id: 'z1', x: 88, y: 90, b: 200 },
+      ],
+      [
+        { id: 'c1', x: 19, y: 44, b: 42 },
+        { id: 'c2', x: 19, y: 56, b: 42 },
+        { id: 'z2', x: 86, y: 90, b: 200 },
+      ],
+      [
+        { id: 'd1', x: 26, y: 44, b: 43 },
+        { id: 'd2', x: 26, y: 56, b: 43 },
+        { id: 'z3', x: 84, y: 90, b: 200 },
+      ],
+      [
+        { id: 'f1', x: 33, y: 38, b: 44 },
+        { id: 'f2', x: 33, y: 50, b: 45 },
+        { id: 'f3', x: 33, y: 56, b: 46 },
+        { id: 'z4', x: 82, y: 90, b: 200 },
+      ],
+    ],
+    startId: 'a',
+    maxDist: 12,
+    maxSkip: 0,
+    target: 3,
+  };
+}
+
+function checkRefractory() {
+  const assert = (cond, msg) => { if (!cond) fail(msg); };
+  const solve = (input) => {
+    const { errors, spec } = normalizeSpec(input);
+    if (errors.length) fail(`不应期场景输入校验失败: ${JSON.stringify(errors)}`);
+    return presentSolution(spec, solveLineage(spec));
+  };
+
+  // 门槛 2：起始 0→1 分裂，女儿经两帧保持（年龄 2）后于 3→4 分裂，合法
+  const ok = solve({ ...refTracks(), refractoryEnabled: true, refractory: 2 });
+  assert(ok.feasible === true, '门槛 2 下连续分裂（隔两帧）应可行');
+  assert(ok.divisions === 2, `应恰好两次分裂（首裂 + 成熟后再裂），实际 ${ok.divisions}`);
+  const first = ok.divisionEvents[0];
+  const second = ok.divisionEvents[1];
+  assert(first.motherAge === null && first.frame === 0, '首次分裂应为起始细胞、不受限');
+  assert(second.motherAge === 2 && second.frame === 3,
+    `再次分裂时年龄应为 2 且在帧 3→4，实际 帧${second.frame + 1} 年龄${second.motherAge}`);
+  // 标注：代际 / 年龄 / 尚余等待
+  const b1 = ok.spots[1].find((s) => s.id === 'b1');
+  assert(b1.generation === 2 && b1.age === 0 && b1.waitRemaining === 2,
+    `新女儿应为第 2 代、年龄 0、尚余 2，实际 ${JSON.stringify(b1)}`);
+  const d1 = ok.spots[3].find((s) => s.id === 'd1');
+  assert(d1.age === 2 && d1.waitRemaining === 0, '成熟支尚余等待应为 0');
+  log('连续分裂烟测通过：起始首裂 → 等待 2 帧间 → 女儿再裂，代际/年龄/等待标注正确');
+
+  // 门槛 3：同一女儿分裂时只累计到 2，被阻断且尚缺 1 帧间
+  const blocked = solve({ ...refTracks(), refractoryEnabled: true, refractory: 3 });
+  assert(blocked.feasible === false, '门槛 3 下女儿过早再分裂应不可行');
+  assert(blocked.refractoryBlock, '应给出不应期阻断归因');
+  assert(blocked.refractoryBlock.from === 3 && blocked.refractoryBlock.to === 4,
+    `最早阻断帧间应为 4→5，实际 ${blocked.refractoryBlock.from + 1}→${blocked.refractoryBlock.to + 1}`);
+  assert(blocked.refractoryBlock.age === 2 && blocked.refractoryBlock.missing === 1,
+    `阻断时年龄应为 2、尚缺 1，实际 年龄${blocked.refractoryBlock.age} 缺${blocked.refractoryBlock.missing}`);
+  log(`不应期阻断烟测通过：${blocked.refractoryBlock.intervalLabel} 母细胞 ${blocked.refractoryBlock.motherLabel} 尚缺 ${blocked.refractoryBlock.missing} 帧间`);
+
+  // 门槛 2 但只给 4 帧，且帧 2/3 有三个近邻斑点：要达到 3 支必须有女儿在
+  // 诞生后的下一帧（年龄 0）立即再分裂，最早阻断在 2→3
+  const earlyInput = {
+    frames: [
+      [
+        { id: 'a', x: 5, y: 50, b: 40 },
+        { id: 'z0', x: 90, y: 90, b: 200 },
+      ],
+      [
+        { id: 'b1', x: 12, y: 46, b: 41 },
+        { id: 'b2', x: 12, y: 54, b: 41 },
+        { id: 'z1', x: 88, y: 90, b: 200 },
+      ],
+      [
+        { id: 'c0', x: 19, y: 38, b: 42 },
+        { id: 'c1', x: 19, y: 46, b: 42 },
+        { id: 'c2', x: 19, y: 54, b: 42 },
+      ],
+      [
+        { id: 'd1', x: 26, y: 42, b: 43 },
+        { id: 'd2', x: 26, y: 50, b: 43 },
+        { id: 'd3', x: 26, y: 58, b: 43 },
+      ],
+    ],
+    startId: 'a',
+    maxDist: 11,
+    maxSkip: 0,
+    target: 3,
+    refractoryEnabled: true,
+    refractory: 2,
+  };
+  const early = solve(earlyInput);
+  assert(early.feasible === false, '4 帧内要求连翻两番应被不应期阻断');
+  assert(early.refractoryBlock && early.refractoryBlock.from === 1 && early.refractoryBlock.age === 0,
+    `最早阻断应在 2→3 且母细胞年龄 0，实际 ${JSON.stringify(early.refractoryBlock)}`);
+  assert(early.refractoryBlock.missing === 2, '年龄 0、门槛 2 时尚缺 2 帧间');
+  // 关闭不应期同一草稿可行（证明阻断完全来自不应期）
+  const off = solve({ ...earlyInput, refractoryEnabled: false });
+  assert(off.feasible === true, '关闭不应期后同一草稿应可行');
+  log('不应期开关烟测通过：开启阻断年龄 0 的即时再分裂，关闭则恢复原规则');
+
+  // 跨漏检计龄：女儿诞生于帧 1，帧 2 整支漏检，帧 3 补获（年龄 +2）后于 3→4 分裂
+  const gapInput = {
+    frames: [
+      [
+        { id: 'a', x: 5, y: 50, b: 40 },
+        { id: 'z0', x: 90, y: 90, b: 200 },
+      ],
+      [
+        { id: 'b1', x: 12, y: 44, b: 41 },
+        { id: 'b2', x: 12, y: 56, b: 41 },
+        { id: 'z1', x: 88, y: 90, b: 200 },
+      ],
+      [
+        // b1 的支本帧漏检：附近无可达斑点；b2 保持到 c2
+        { id: 'c2', x: 19, y: 56, b: 42 },
+        { id: 'z2', x: 86, y: 90, b: 200 },
+      ],
+      [
+        { id: 'c1', x: 26, y: 44, b: 43 }, // b1 跨帧补获（位移 ≤ 2×maxDist）
+        { id: 'd2', x: 26, y: 56, b: 43 },
+        { id: 'z3', x: 84, y: 90, b: 200 },
+      ],
+      [
+        { id: 'f1', x: 33, y: 38, b: 44 },
+        { id: 'f2', x: 33, y: 50, b: 45 },
+        { id: 'f3', x: 33, y: 56, b: 46 },
+        { id: 'z4', x: 82, y: 90, b: 200 },
+      ],
+    ],
+    startId: 'a',
+    maxDist: 12,
+    maxSkip: 1,
+    target: 3,
+  };
+  const gapOk = solve({ ...gapInput, refractoryEnabled: true, refractory: 2 });
+  assert(gapOk.feasible === true, `跨漏检计龄场景门槛 2 应可行（漏检 +2 使支恰好成熟）：${JSON.stringify(gapOk.earliestBreak)}`);
+  assert(gapOk.skips === 1, '应有 1 个漏检段');
+  const gapDiv = gapOk.divisionEvents.find((d) => d.motherId === 'c1');
+  assert(gapDiv && gapDiv.frame === 3 && gapDiv.motherAge === 2,
+    `c1 应在帧 4 以年龄 2（漏检 +2）分裂，实际 ${JSON.stringify(gapDiv)}`);
+  // 若错误地只按 +1 计龄，门槛 2 下此分裂不可能；用门槛 3 复核阻断口径
+  const gapTight = solve({ ...gapInput, refractoryEnabled: true, refractory: 3 });
+  assert(gapTight.feasible === false, '门槛 3 时跨漏检支（年龄 2）仍应被阻断');
+  assert(gapTight.refractoryBlock && gapTight.refractoryBlock.age === 2 &&
+    gapTight.refractoryBlock.missing === 1,
+    `跨漏检阻断应报告年龄 2、尚缺 1，实际 ${JSON.stringify(gapTight.refractoryBlock)}`);
+  log('跨漏检计龄烟测通过：漏检连接按真实跨度 +2，年龄恰好达到门槛 2 才允许分裂');
+}
+
 async function main() {
   let base = BASE_URL;
   if (process.env.BASE_URL) {
@@ -174,6 +339,7 @@ async function main() {
   await waitHealthy(base);
   await checkStatic(base);
   checkScenario();
+  checkRefractory();
   log('全部烟测通过 ✔');
   if (ownServer) ownServer.kill('SIGTERM');
   if (portFile && existsSync(portFile)) rmSync(portFile);

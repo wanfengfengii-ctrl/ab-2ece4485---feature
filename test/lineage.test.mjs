@@ -290,7 +290,7 @@ function bruteForce(spec) {
         bright > best.bright ||
         (bright === best.bright &&
           (usedSkip < best.skips ||
-            (usedSkip === best.skips && tupleLex(sig, best.sig) < 0)))) {
+            (usedSkip === best.skips && frameTupleLex(sig, best.sig) < 0)))) {
         best = { bright, skips: usedSkip, sig };
       }
       return;
@@ -373,6 +373,21 @@ function tupleLex(a, b) {
   return flatA.length - flatB.length;
 }
 
+// 严格逐帧裁决：先比该帧采用斑点序号元组（前缀短者小），再比母本序号元组；
+// 空帧（整帧漏检）也作为一个独立帧参与，不拉平。
+function frameTupleLex(a, b) {
+  const n = Math.min(a.length, b.length);
+  for (let k = 0; k < n; k++) {
+    const x = a[k], y = b[k];
+    const m = Math.min(x.length, y.length);
+    for (let i = 0; i < m; i++) {
+      if (x[i] !== y[i]) return x[i] - y[i];
+    }
+    if (x.length !== y.length) return x.length - y.length;
+  }
+  return a.length - b.length;
+}
+
 function rng(seed) {
   let s = seed >>> 0;
   return () => {
@@ -380,6 +395,337 @@ function rng(seed) {
     return s / 4294967296;
   };
 }
+
+// ---------- 分裂不应期 ----------
+function assertRefractoryConsistent(spec, sol, input) {
+  assert.equal(sol.refractory.enabled, true);
+  const R = input.refractory;
+  // 沿边核对年龄 / 代际 / 等待帧间
+  const spot = new Map();
+  sol.spots.forEach((list, t) => list.forEach((s) => spot.set(`${t}:${s.id}`, s)));
+  // 分裂事件：起始细胞首裂不受限；其余分裂年龄必须达到门槛
+  for (const d of sol.divisionEvents) {
+    if (d.motherAge === null) {
+      // 无年龄分裂只能是某支自起始以来的首次分裂：母本必为第 1 代
+      const m = spot.get(`${d.frame}:${d.motherId}`);
+      assert.equal(m.generation, 1, '无年龄分裂的母本必须仍是起始支（第 1 代）');
+    } else {
+      assert.ok(d.motherAge >= R,
+        `分裂过早：F${d.frame + 1}·${d.motherId} 年龄 ${d.motherAge} < 门槛 ${R}`);
+    }
+  }
+  // 沿边核对年龄 / 代际 / 等待帧间
+  const outM = new Map();
+  sol.edges.forEach((e) => {
+    const k = `${e.fromFrame}:${e.fromId}`;
+    if (!outM.has(k)) outM.set(k, []);
+    outM.get(k).push(e);
+  });
+  for (const e of sol.edges) {
+    const m = spot.get(`${e.fromFrame}:${e.fromId}`);
+    const c = spot.get(`${e.toFrame}:${e.toId}`);
+    const isSplit = outM.get(`${e.fromFrame}:${e.fromId}`).length === 2;
+    if (isSplit) {
+      assert.equal(c.age, 0, '分裂女儿年龄归零');
+      assert.equal(c.generation, m.generation + 1, '分裂女儿代际 +1');
+    } else {
+      assert.equal(c.generation, m.generation, '保持 / 漏检不换代');
+      if (m.age === null) {
+        assert.equal(c.age, null, '起始支保持后仍为首裂前');
+      } else {
+        assert.equal(c.age, m.age + e.gap, '普通连接 +1、跨漏检 +2');
+      }
+    }
+    if (c.age !== null) {
+      assert.equal(c.waitRemaining, Math.max(0, R - c.age), '尚余等待帧间计算错误');
+    }
+  }
+  assert.equal(sol.spots[0][0].generation, 1);
+  assert.equal(sol.spots[0][0].age, null, '起始斑点无年龄');
+}
+
+const refFrames4 = () => [
+  [
+    { id: 'a', x: 0, y: 0, b: 10 }, { id: 'x0', x: 50, y: 50, b: 9 },
+  ],
+  [
+    { id: 'b1', x: 1, y: -1, b: 10 }, { id: 'b2', x: 1, y: 1, b: 10 },
+    { id: 'x1', x: 50, y: 50, b: 9 },
+  ],
+  [
+    { id: 'c1', x: 2, y: -2, b: 10 }, { id: 'c2', x: 2, y: 0, b: 10 },
+    { id: 'c3', x: 2, y: 2, b: 10 },
+  ],
+  [
+    { id: 'd1', x: 3, y: -2, b: 10 }, { id: 'd2', x: 3, y: 0, b: 10 },
+    { id: 'd3', x: 3, y: 2, b: 10 },
+  ],
+];
+
+test('不应期：起始首裂不受限，但女儿下一帧立即再分裂被阻断并归因', () => {
+  const input = {
+    frames: refFrames4(),
+    startId: 'a', maxDist: 5, maxSkip: 0, target: 3,
+    refractoryEnabled: true, refractory: 2,
+  };
+  // 关闭不应期时同一草稿可行（确证阻断来自不应期而非其它约束）
+  const off = run({ ...input, refractoryEnabled: false });
+  assert.equal(off.sol.feasible, true);
+  assert.equal(off.sol.divisions, 2);
+
+  const { raw, sol } = run(input);
+  assert.equal(raw.feasible, false);
+  assert.ok(sol.refractoryBlock, '应给出不应期阻断信息');
+  assert.equal(sol.refractoryBlock.from, 1);
+  assert.equal(sol.refractoryBlock.to, 2);
+  assert.equal(sol.refractoryBlock.motherId, 'b1');
+  assert.equal(sol.refractoryBlock.age, 0);
+  assert.equal(sol.refractoryBlock.missing, 2);
+  assert.match(sol.refractoryBlock.intervalLabel, /第 2 帧 → 第 3 帧/);
+});
+
+test('不应期：合格方案标注代际、分裂年龄与尚余等待帧间', () => {
+  const input = {
+    frames: [
+      [{ id: 'a', x: 0, y: 0, b: 10 }, { id: 'x0', x: 50, y: 50, b: 9 }],
+      [
+        { id: 'b1', x: 1, y: -1, b: 10 }, { id: 'b2', x: 1, y: 1, b: 10 },
+        { id: 'x1', x: 50, y: 50, b: 9 },
+      ],
+      [
+        { id: 'p1', x: 2, y: -1, b: 10 }, { id: 'p2', x: 2, y: 1, b: 10 },
+        { id: 'x2', x: 50, y: 50, b: 9 },
+      ],
+      [
+        { id: 'e1', x: 3, y: -2, b: 10 }, { id: 'e2', x: 3, y: 0, b: 10 },
+        { id: 'e3', x: 3, y: 2, b: 10 },
+      ],
+      [
+        { id: 'f1', x: 4, y: -2, b: 10 }, { id: 'f2', x: 4, y: 0, b: 10 },
+        { id: 'f3', x: 4, y: 2, b: 10 },
+      ],
+    ],
+    startId: 'a', maxDist: 5, maxSkip: 0, target: 3,
+    refractoryEnabled: true, refractory: 2,
+  };
+  const { spec, sol } = run(input);
+  assertValidLineage(spec, sol, input);
+  assertRefractoryConsistent(spec, sol, input);
+  // 根在帧1分裂；一支女儿在帧3（年龄 2）分裂，连续分裂间隔恰为门槛
+  const lateDiv = sol.divisionEvents.find((d) => d.motherAge === 2);
+  assert.ok(lateDiv, '应有一次年龄恰为 2 的分裂');
+  assert.equal(lateDiv.frame, 3);
+});
+
+test('不应期：跨漏检连接按真实跨度 +2 计龄', () => {
+  const input = {
+    frames: [
+      [{ id: 'a', x: 0, y: 0, b: 10 }, { id: 'x0', x: 50, y: 50, b: 9 }],
+      [
+        { id: 'b1', x: 1, y: -1, b: 10 }, { id: 'b2', x: 1, y: 1, b: 10 },
+        { id: 'x1', x: 50, y: 50, b: 9 },
+      ],
+      [
+        { id: 'p2', x: 2, y: 1, b: 10 }, { id: 'j2', x: 50, y: 51, b: 9 },
+      ],
+      [
+        { id: 'c1', x: 3, y: -1, b: 10 }, { id: 'c2', x: 3, y: 1, b: 10 },
+        { id: 'x3', x: 50, y: 50, b: 9 },
+      ],
+      [
+        { id: 'f1', x: 4, y: -2, b: 10 }, { id: 'f2', x: 4, y: 0, b: 10 },
+        { id: 'f3', x: 4, y: 2, b: 10 },
+      ],
+    ],
+    startId: 'a', maxDist: 5, maxSkip: 1, target: 3,
+    refractoryEnabled: true, refractory: 2,
+  };
+  const { spec, sol } = run(input);
+  assertValidLineage(spec, sol, input);
+  assertRefractoryConsistent(spec, sol, input);
+  // 经漏检 +2 后年龄恰好达到门槛 2 而可分裂
+  const gapDiv = sol.divisionEvents.find((d) => d.frame === 3 && d.motherAge === 2);
+  assert.ok(gapDiv, '跨漏检计龄后应允许年龄 2 的分裂');
+  // 门槛提到 3：同一支只累计到 2，阻断且尚缺 1 帧间
+  const tight = run({ ...input, refractory: 3 });
+  assert.equal(tight.raw.feasible, false);
+  assert.ok(tight.sol.refractoryBlock);
+  assert.equal(tight.sol.refractoryBlock.from, 3);
+  assert.equal(tight.sol.refractoryBlock.missing, 1);
+});
+
+test('不应期：门槛取值 2~4 校验', () => {
+  const base = {
+    frames: refFrames4(),
+    startId: 'a', maxDist: 5, maxSkip: 0, target: 2,
+    refractoryEnabled: true,
+  };
+  assert.ok(normalizeSpec({ ...base, refractory: 2 }).errors.length === 0);
+  assert.ok(normalizeSpec({ ...base, refractory: 4 }).errors.length === 0);
+  assert.ok(normalizeSpec({ ...base, refractory: 1 }).errors.some((e) => e.field === 'refractory'));
+  assert.ok(normalizeSpec({ ...base, refractory: 5 }).errors.some((e) => e.field === 'refractory'));
+  // 关闭时即使缺省值非法也不报错（旧输入兼容）
+  assert.equal(normalizeSpec({
+    frames: refFrames4(), startId: 'a', maxDist: 5, maxSkip: 0, target: 2,
+  }).errors.length, 0);
+});
+
+test('不应期：未启用时结果不携带年龄等待，且与原规则一致', () => {
+  const input = {
+    frames: refFrames4(),
+    startId: 'a', maxDist: 5, maxSkip: 0, target: 3,
+  };
+  const { sol } = run(input);
+  assert.equal(sol.feasible, true);
+  assert.equal(sol.refractory.enabled, false);
+  assert.equal(sol.spots[0][0].age, null);
+  assert.equal(sol.spots[1][0].waitRemaining, null);
+});
+
+// ---------- 独立暴力枚举：带分裂不应期的逐帧 DFS ----------
+function bruteForceRefractory(spec) {
+  const { frames, startIndex, maxDist, maxSkip, target, refractory: R } = spec;
+  const F = frames.length;
+  const near = (m, c, gap) =>
+    Math.hypot(m.x - c.x, m.y - c.y) <= maxDist * gap + 1e-9;
+
+  let best = null;
+
+  // live: [{i, age}]（age=null 表示起始支首裂前）；gaps: [{i, age}]
+  function dfs(t, live, gaps, usedSkip, bright, usedPerFrame) {
+    if (live.length + gaps.length > target) return;
+    if (t === F - 1) {
+      if (gaps.length > 0 || live.length !== target) return;
+      const sig = usedPerFrame.slice(1).map((s) => [...s].sort((a, b) => a - b));
+      if (!best ||
+        bright > best.bright ||
+        (bright === best.bright &&
+          (usedSkip < best.skips ||
+            (usedSkip === best.skips && frameTupleLex(sig, best.sig) < 0)))) {
+        best = { bright, skips: usedSkip, sig };
+      }
+      return;
+    }
+
+    const tracks = [
+      ...live.map((x) => ({ kind: 'o', ...x })),
+      ...gaps.map((x) => ({ kind: 'g', ...x })),
+    ];
+    const claimed = new Set();
+    const nextLive = [];
+    const openGaps = [];
+
+    function rec(k, accBright) {
+      if (k === tracks.length) {
+        dfs(t + 1, nextLive.map((x) => x).sort((a, b) => a.i - b.i),
+          openGaps.map((x) => x).sort((a, b) => a.i - b.i),
+          usedSkip + openGaps.length, accBright, usedPerFrame);
+        return;
+      }
+      const tr = tracks[k];
+      if (tr.kind === 'g') {
+        for (let j = 0; j < frames[t + 1].length; j++) {
+          if (claimed.has(j)) continue;
+          if (!near(frames[t - 1][tr.i], frames[t + 1][j], 2)) continue;
+          claimed.add(j); nextLive.push({ i: j, age: tr.age });
+          usedPerFrame[t + 1].add(j);
+          rec(k + 1, accBright + frames[t + 1][j].b);
+          usedPerFrame[t + 1].delete(j);
+          nextLive.pop(); claimed.delete(j);
+        }
+        return;
+      }
+      const m = frames[t][tr.i];
+      const keepAge = tr.age === null ? null : tr.age + 1;
+      for (let j = 0; j < frames[t + 1].length; j++) {
+        if (claimed.has(j) || !near(m, frames[t + 1][j], 1)) continue;
+        claimed.add(j); nextLive.push({ i: j, age: keepAge });
+        usedPerFrame[t + 1].add(j);
+        rec(k + 1, accBright + frames[t + 1][j].b);
+        usedPerFrame[t + 1].delete(j);
+        nextLive.pop(); claimed.delete(j);
+      }
+      // 分裂：起始支（age=null）不受限；其余须 age >= R
+      if (tr.age === null || tr.age >= R) {
+        for (let a = 0; a < frames[t + 1].length; a++) {
+          if (claimed.has(a) || !near(m, frames[t + 1][a], 1)) continue;
+          for (let b2 = a + 1; b2 < frames[t + 1].length; b2++) {
+            if (claimed.has(b2) || !near(m, frames[t + 1][b2], 1)) continue;
+            claimed.add(a); claimed.add(b2);
+            nextLive.push({ i: a, age: 0 }, { i: b2, age: 0 });
+            usedPerFrame[t + 1].add(a); usedPerFrame[t + 1].add(b2);
+            rec(k + 1, accBright + frames[t + 1][a].b + frames[t + 1][b2].b);
+            usedPerFrame[t + 1].delete(a); usedPerFrame[t + 1].delete(b2);
+            nextLive.pop(); nextLive.pop();
+            claimed.delete(a); claimed.delete(b2);
+          }
+        }
+      }
+      // 漏检：年龄按跨度 +2
+      if (usedSkip + openGaps.length < maxSkip && t + 2 <= F - 1) {
+        openGaps.push({ i: tr.i, age: tr.age === null ? null : tr.age + 2 });
+        rec(k + 1, accBright);
+        openGaps.pop();
+      }
+    }
+    rec(0, bright);
+  }
+
+  const used0 = Array.from({ length: F }, () => new Set());
+  used0[0].add(startIndex);
+  dfs(0, [{ i: startIndex, age: null }], [], 0, frames[0][startIndex].b, used0);
+  return best;
+}
+
+test('随机对拍：启用不应期后与带年龄的独立暴力枚举裁决一致', () => {
+  const rand = rng(20260930);
+  let feasibleCases = 0;
+  for (let iter = 0; iter < 3000 && feasibleCases < 200; iter++) {
+    const F = rand() < 0.35 ? 5 : 4;
+    const frames = [];
+    for (let t = 0; t < F; t++) {
+      const n = 2 + Math.floor(rand() * 2);
+      const fr = [];
+      for (let i = 0; i < n; i++) {
+        fr.push({
+          id: `r${t}_${i}`,
+          x: Math.floor(rand() * 3),
+          y: Math.floor(rand() * 3),
+          b: Math.floor(rand() * 9) + 1,
+        });
+      }
+      frames.push(fr);
+    }
+    const input = {
+      frames,
+      startId: frames[0][Math.floor(rand() * frames[0].length)].id,
+      maxDist: 1 + Math.floor(rand() * 3),
+      maxSkip: rand() < 0.5 ? 0 : 1,
+      target: 1 + Math.floor(rand() * 2),
+      refractoryEnabled: true,
+      refractory: 2 + Math.floor(rand() * 3),
+    };
+    const { errors, spec } = normalizeSpec(input);
+    if (errors.length) continue;
+    const raw = solveLineage(spec);
+    const bf = bruteForceRefractory(spec);
+    if (!raw.feasible) {
+      assert.equal(bf, null, `迭代 ${iter}：求解器判不应期不可行但暴力枚举存在解`);
+      continue;
+    }
+    assert.ok(bf, `迭代 ${iter}：求解器给解但带龄暴力枚举无解`);
+    feasibleCases++;
+    const sol = presentSolution(spec, raw);
+    assertValidLineage(spec, sol, input);
+    assertRefractoryConsistent(spec, sol, input);
+    assert.equal(sol.totalBrightness, bf.bright, `迭代 ${iter} 亮度不一致`);
+    assert.equal(sol.skips, bf.skips, `迭代 ${iter} 漏检数不一致`);
+    const sig = sol.used.slice(1).map((ids, t) =>
+      ids.map((id) => frames[t + 1].findIndex((s) => s.id === id)).sort((a, b) => a - b));
+    assert.equal(frameTupleLex(sig, bf.sig), 0, `迭代 ${iter} 输入顺序裁决不一致`);
+  }
+  assert.ok(feasibleCases >= 30, `带龄可行对拍用例过少: ${feasibleCases}`);
+});
 
 test('随机对拍：小规模输入下与独立暴力枚举裁决一致', () => {
   const rand = rng(20260929);
@@ -423,7 +769,7 @@ test('随机对拍：小规模输入下与独立暴力枚举裁决一致', () =>
     assert.equal(sol.skips, bf.skips, `迭代 ${iter} 漏检数不一致`);
     const sig = sol.used.slice(1).map((ids, t) =>
       ids.map((id) => frames[t + 1].findIndex((s) => s.id === id)).sort((a, b) => a - b));
-    assert.equal(tupleLex(sig, bf.sig), 0, `迭代 ${iter} 输入顺序裁决不一致`);
+    assert.equal(frameTupleLex(sig, bf.sig), 0, `迭代 ${iter} 输入顺序裁决不一致`);
   }
   assert.ok(feasibleCases >= 30, `可行对拍用例过少: ${feasibleCases}`);
 });
