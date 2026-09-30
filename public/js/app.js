@@ -34,6 +34,8 @@ const SAMPLE = {
   maxDist: 12,
   maxSkip: 1,
   target: 2,
+  refractoryEnabled: false,
+  refractory: 2,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -45,6 +47,8 @@ const els = {
   maxDist: $('#max-dist'),
   maxSkip: $('#max-skip'),
   target: $('#target'),
+  refractoryEnabled: $('#refractory-enabled'),
+  refractory: $('#refractory'),
   solve: $('#btn-solve'),
   stale: $('#stale-hint'),
   errors: $('#form-errors'),
@@ -54,6 +58,7 @@ const els = {
   stats: $('#stats'),
   chart: $('#chart'),
   tbody: $('#edges-table tbody'),
+  thead: $('#edges-table thead'),
   used: $('#used-list'),
 };
 
@@ -63,7 +68,13 @@ let lastSolution = null; // 仅保存最近一次「复原」的结果；编辑�
 function loadDraft() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const d = JSON.parse(raw);
+      // 旧草稿迁移：不应期字段缺省关闭
+      d.refractoryEnabled = d.refractoryEnabled === true;
+      if (!Number.isInteger(d.refractory)) d.refractory = 2;
+      return d;
+    }
   } catch { /* 忽略损坏草稿 */ }
   return structuredClone(SAMPLE);
 }
@@ -173,6 +184,9 @@ function renderParams() {
   els.maxDist.value = draft.maxDist;
   els.maxSkip.value = draft.maxSkip;
   els.target.value = draft.target;
+  els.refractoryEnabled.checked = draft.refractoryEnabled === true;
+  els.refractory.value = draft.refractory;
+  els.refractory.disabled = !els.refractoryEnabled.checked;
   renderStartOptions();
 }
 
@@ -228,10 +242,18 @@ function solve() {
       els.infeasible.classList.add('hidden');
 
       if (!sol.feasible) {
+        let blockLine = '';
+        if (sol.refractoryBlock) {
+          blockLine =
+            `<div class="refractory-block">` +
+            `<strong>分裂不应期阻断：</strong>${escapeAttr(sol.refractoryBlock.label)}` +
+            `</div>`;
+        }
         els.infeasible.innerHTML = `
           <strong>不存在可同时满足全部约束的谱系。</strong><br/>
-          终帧存活数与祖先唯一性、位移或漏检限制无法同时成立；输入草稿已保留，可调整后再次复原。<br/>
-          最早断开的帧间：<span class="break-frame">第 ${sol.earliestBreak.from + 1} 帧 → 第 ${sol.earliestBreak.to + 1} 帧</span>`;
+          终帧存活数与祖先唯一性、位移、漏检${sol.refractoryBlock ? '或分裂不应期' : ''}限制无法同时成立；输入草稿已保留，可调整后再次复原。<br/>
+          最早断开的帧间：<span class="break-frame">第 ${sol.earliestBreak.from + 1} 帧 → 第 ${sol.earliestBreak.to + 1} 帧</span>
+          ${blockLine}`;
         els.infeasible.classList.remove('hidden');
         return;
       }
@@ -251,12 +273,18 @@ function showErrors(errors) {
 
 // ---- 结果渲染 ----
 function renderSolution(sol) {
-  els.stats.innerHTML = [
+  const stats = [
     ['总亮度', sol.totalBrightness],
     ['漏检段', sol.skips],
     ['分裂次数', sol.divisions],
     ['终帧存活', sol.survivors],
-  ].map(([k, v]) => `<span class="stat">${k}<b>${v}</b></span>`).join('');
+  ];
+  if (sol.refractory) stats.push(['不应期门槛', `${sol.refractory} 帧间`]);
+  els.stats.innerHTML = stats
+    .map(([k, v]) => `<span class="stat">${k}<b>${v}</b></span>`).join('');
+
+  els.tbody.classList.toggle('with-refractory', !!sol.refractory);
+  els.thead.classList.toggle('with-refractory', !!sol.refractory);
 
   renderChart(sol);
   renderEdgesTable(sol);
@@ -291,12 +319,21 @@ function renderEdgesTable(sol) {
     }
     const tr = document.createElement('tr');
     tr.className = rowClass;
+    let ageCell = '';
+    if (e.divisionAge !== undefined) {
+      ageCell = e.divisionAge === null
+        ? '<td class="ref-col"><em>起始首裂</em></td>'
+        : e.divisionAge === false
+          ? '<td class="ref-col">—</td>'
+          : `<td class="ref-col">${e.divisionAge}</td>`;
+    }
     tr.innerHTML = `
       <td>${idx + 1}</td>
       <td>F${e.fromFrame + 1}·${escapeAttr(e.fromId)} <em>(${m.x},${m.y})</em></td>
       <td>F${e.toFrame + 1}·${escapeAttr(e.toId)} <em>(${c.x},${c.y})</em></td>
       <td><span class="badge ${badge}">${kind}</span></td>
       <td>F${e.fromFrame + 1}→F${e.toFrame + 1}${e.gap === 2 ? '（漏 1 帧）' : ''}</td>
+      ${ageCell}
       <td>${e.dist}</td>`;
     els.tbody.appendChild(tr);
   });
@@ -309,10 +346,26 @@ function renderUsed(sol) {
     const unused = fr.map((s) => s.id).filter((id) => !used.includes(id));
     const div = document.createElement('div');
     div.className = 'used-frame';
-    div.innerHTML =
-      `<b>第 ${t + 1} 帧（${used.length}/${fr.length}）</b>` +
-      used.map((id) => `<span>${escapeAttr(id)}</span>`).join('') +
-      (unused.length ? `<em>未采用：${unused.map(escapeAttr).join('、')}</em>` : '');
+    let head = `<b>第 ${t + 1} 帧（${used.length}/${fr.length}）</b>`;
+    if (sol.spots) {
+      const recOf = new Map(sol.spots[t].map((r) => [r.id, r]));
+      head += used.map((id) => {
+        const r = recOf.get(id);
+        const ageText = r.age === null ? '起始' : r.age;
+        const divTag = r.divides
+          ? ` <i class="age-tag divides" title="该斑点在此帧后分裂">分裂@${r.divisionAge === null ? '起始' : r.divisionAge}</i>`
+          : '';
+        const waitTag = r.wait > 0
+          ? `<em class="wait">再等 ${r.wait}</em>`
+          : '<em class="ready">可分裂</em>';
+        return `<span class="spot-age">${escapeAttr(id)}` +
+          `<small>代${r.generation}·龄${ageText}</small>${divTag}${waitTag}</span>`;
+      }).join('');
+    } else {
+      head += used.map((id) => `<span>${escapeAttr(id)}</span>`).join('');
+    }
+    if (unused.length) head += `<em>未采用：${unused.map(escapeAttr).join('、')}</em>`;
+    div.innerHTML = head;
     els.used.appendChild(div);
   });
 }
@@ -373,13 +426,24 @@ function renderChart(sol) {
     const y = py(s);
     const used = usedSet.has(`${t}:${s.id}`);
     const isStart = t === 0 && s.id === draft.startId;
+    const rec = sol.spots ? (sol.spots[t] || []).find((r) => r.id === s.id) : null;
+    let ageInfo = '';
+    if (rec) {
+      ageInfo = ` · 代${rec.generation}·龄${rec.age === null ? '起始' : rec.age}` +
+        (rec.wait > 0 ? `·再等${rec.wait}` : '') +
+        (rec.divides ? ` · 分裂@${rec.divisionAge === null ? '起始' : rec.divisionAge}` : '');
+    }
     const r = 4 + Math.max(0, Number(s.b) || 0) / 40;
     svg += `<circle cx="${x}" cy="${y}" r="${Math.min(r, 9)}"
       fill="${used ? '#4fd1c5' : '#46566c'}" fill-opacity="${used ? 0.95 : 0.5}">
-      <title>F${t + 1}·${escapeAttr(s.id)} (${s.x}, ${s.y}) 亮度 ${s.b}${used ? ' · 采用' : ' · 未采用'}</title></circle>`;
+      <title>F${t + 1}·${escapeAttr(s.id)} (${s.x}, ${s.y}) 亮度 ${s.b}${used ? ' · 采用' : ' · 未采用'}${ageInfo}</title></circle>`;
     if (isStart) {
       svg += `<circle cx="${x}" cy="${y}" r="${Math.min(r, 9) + 4}"
         fill="none" stroke="#f6e05e" stroke-width="2"/>`;
+    }
+    if (rec && rec.divides) {
+      svg += `<circle cx="${x}" cy="${y}" r="${Math.min(r, 9) + 2.5}"
+        fill="none" stroke="#b794f4" stroke-width="1.5" stroke-dasharray="3 2"/>`;
     }
     svg += `<text x="${x}" y="${y - Math.min(r, 9) - 4}" fill="${used ? '#cde8e5' : '#7488a0'}"
       font-size="9.5" text-anchor="middle">${escapeAttr(s.id)}</text>`;
@@ -417,6 +481,17 @@ els.startSelect.addEventListener('change', () => {
       invalidate();
     });
   });
+
+// 分裂不应期：修改开关或门槛立即作废旧结果
+els.refractoryEnabled.addEventListener('change', () => {
+  draft.refractoryEnabled = els.refractoryEnabled.checked;
+  els.refractory.disabled = !draft.refractoryEnabled;
+  invalidate();
+});
+els.refractory.addEventListener('input', () => {
+  draft.refractory = els.refractory.value === '' ? '' : Number(els.refractory.value);
+  invalidate();
+});
 
 els.solve.addEventListener('click', solve);
 

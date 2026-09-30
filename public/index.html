@@ -40,6 +40,14 @@
           终帧应存活细胞数
           <input type="number" id="target" min="1" step="1" />
         </label>
+        <label class="refractory-param">
+          分裂不应期（女儿再次分裂前至少经历的帧间数，普通连接计 1、跨漏检计 2）
+          <span class="refractory-row">
+            <label class="switch"><input type="checkbox" id="refractory-enabled" /> 启用</label>
+            <input type="number" id="refractory" min="2" max="4" step="1" value="2" disabled />
+            <em class="refractory-hint">2–4 个帧间；起始细胞首次分裂不受限</em>
+          </span>
+        </label>
       </div>
 
       <div class="actions">
@@ -67,7 +75,7 @@
         <div class="table-wrap">
           <table id="edges-table">
             <thead>
-              <tr><th>#</th><th>母本</th><th>女儿</th><th>关系</th><th>跨越</th><th>位移</th></tr>
+              <tr><th>#</th><th>母本</th><th>女儿</th><th>关系</th><th>跨越</th><th class="ref-col">分裂时年龄</th><th>位移</th></tr>
             </thead>
             <tbody></tbody>
           </table>

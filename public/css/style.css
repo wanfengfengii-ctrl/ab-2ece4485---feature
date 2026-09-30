@@ -203,6 +203,83 @@ body {
 
 .params input:focus, .params select:focus { outline: none; border-color: var(--cyan); }
 
+.refractory-param { grid-column: 1 / -1; }
+
+.refractory-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+.refractory-row input[type="number"] {
+  width: 74px;
+  background: #111a27;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 9px;
+  font-size: 13px;
+}
+
+.refractory-row input[type="number"]:focus { outline: none; border-color: var(--cyan); }
+.refractory-row input[type="number"]:disabled { opacity: .4; }
+
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.switch input { width: auto; }
+
+.refractory-hint { color: var(--text-dim); font-size: 11.5px; font-style: normal; }
+
+.refractory-block {
+  margin-top: 8px;
+  background: #3a2c18;
+  border: 1px solid #7a5a26;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--warn);
+  font-size: 13px;
+}
+
+/* 分裂不应期结果列：未启用时隐藏 */
+.ref-col { display: none; }
+.with-refractory .ref-col { display: table-cell; }
+
+.spot-age {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 7px;
+  margin: 2px 4px 2px 0;
+}
+
+.spot-age small { color: var(--text-dim); font-size: 10.5px; }
+
+.spot-age .age-tag {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--purple);
+  border: 1px solid var(--purple);
+  border-radius: 4px;
+  padding: 0 4px;
+  align-self: flex-start;
+}
+
+.spot-age em { font-style: normal; font-size: 10.5px; }
+.spot-age .wait { color: var(--warn); }
+.spot-age .ready { color: var(--cyan); }
+
 .actions {
   display: flex;
   align-items: center;

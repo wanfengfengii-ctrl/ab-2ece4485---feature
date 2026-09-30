@@ -157,6 +157,100 @@ function checkScenario() {
   log('不可行报告正确：最早断开 第 1 帧 → 第 2 帧');
 }
 
+// 分裂不应期烟测：
+//  A) 跨漏检按真实跨度计 2 个帧间：根首裂 → 两女儿各跨一帧漏检 → 补获时龄 2，
+//     门槛 2 下允许再次分裂；门槛收紧到 3 则被阻断（尚缺 1 帧间）。
+//  B) 连续分裂：末帧需 4 支而两次分裂间隔不足，门槛 2 下不可行并给出阻断母本；
+//     关闭不应期后同一草稿可行。
+function checkRefractoryScenarios() {
+  const assert = (cond, msg) => { if (!cond) fail(msg); };
+  const s = (id, x, y, b = 40) => ({ id, x, y, b });
+
+  // ---- 场景 A：跨漏检计龄 ----
+  const gapInput = {
+    frames: [
+      [s('a', 5, 50), s('z0', 90, 90, 200)],
+      [s('b1', 15, 42, 42), s('b2', 15, 58, 42), s('z1', 88, 90, 200)],
+      [s('z2a', 86, 90, 200), s('z2b', 86, 80, 190)],
+      [s('c1', 35, 42, 44), s('c2', 35, 58, 44), s('z3', 84, 85, 200)],
+      [s('d1', 45, 34, 46), s('d2', 45, 46, 46),
+       s('d3', 45, 54, 48), s('d4', 45, 66, 48), s('z4', 82, 82, 200)],
+    ],
+    startId: 'a', maxDist: 14, maxSkip: 2, target: 4,
+    refractoryEnabled: true, refractory: 2,
+  };
+  {
+    const { errors, spec } = normalizeSpec(gapInput);
+    if (errors.length) fail(`不应期场景 A 输入校验失败: ${JSON.stringify(errors)}`);
+    const raw = solveLineage(spec);
+    if (!raw.feasible) fail(`跨漏检计龄后满龄应可分裂，却被判不可行: ${JSON.stringify(raw.earliestBreak)}`);
+    const sol = presentSolution(spec, raw);
+    assert(sol.skips === 2, `两支各跨一帧漏检，漏检段应为 2，实际 ${sol.skips}`);
+    assert(sol.divisions === 3, `应为首裂 + 两支各再裂共 3 次，实际 ${sol.divisions}`);
+    const gapEdges = sol.edges.filter((e) => e.gap === 2);
+    assert(gapEdges.length === 2 && gapEdges.every((e) => e.childAge === 2),
+      '跨漏检补获女儿分裂年龄应为 2');
+    const cRecs = sol.spots[3];
+    assert(cRecs.length === 2 && cRecs.every((r) => r.age === 2 && r.divides && r.divisionAge === 2),
+      `c1/c2 应龄 2 并在龄 2 分裂，实际 ${JSON.stringify(cRecs)}`);
+    const dRecs = sol.spots[4];
+    assert(dRecs.length === 4 && dRecs.every((r) => r.age === 0 && r.generation === 2 && r.wait === 2),
+      `末帧女儿应代 2、龄 0、尚余等待 2，实际 ${JSON.stringify(dRecs)}`);
+    log('不应期场景 A 通过：跨漏检计 2 帧间，补获满龄即分裂');
+  }
+  {
+    // 同草稿门槛收紧到 3：补获龄 2 仍不足 → 阻断
+    const tight = structuredClone(gapInput);
+    tight.refractory = 3;
+    const spec = normalizeSpec(tight).spec;
+    const raw = solveLineage(spec);
+    assert(raw.feasible === false, '门槛 3 下补获龄 2 应不可行');
+    assert(raw.refractoryBlock, '应给出不应期阻断归因');
+    assert(raw.refractoryBlock.age === 2 && raw.refractoryBlock.need === 1,
+      `阻断母本应龄 2、尚缺 1，实际 ${JSON.stringify(raw.refractoryBlock)}`);
+    assert(raw.earliestBreak.from === 3,
+      `最早阻断应在 第 4 帧→第 5 帧，实际 ${raw.earliestBreak.from}`);
+    const sol = presentSolution(spec, raw);
+    assert(/尚缺 1 个等待帧间/.test(sol.refractoryBlock.label) && /c[12]/.test(sol.refractoryBlock.label),
+      `阻断说明应含缺口与母本: ${sol.refractoryBlock.label}`);
+    log('不应期场景 A 收紧门槛通过：阻断并指出母本 c1/c2 尚缺 1 帧间');
+  }
+
+  // ---- 场景 B：连续分裂被阻断 ----
+  const chainInput = {
+    frames: [
+      [s('a', 5, 50), s('z0', 90, 90, 200)],
+      [s('b1', 15, 42, 42), s('b2', 15, 58, 42), s('z1', 88, 90, 200)],
+      [s('c1', 25, 34, 44), s('c2', 25, 46, 44),
+       s('c3', 25, 54, 44), s('c4', 25, 66, 44), s('z2', 86, 90, 200)],
+      [s('d1', 35, 34, 46), s('d2', 35, 46, 46),
+       s('d3', 35, 54, 48), s('d4', 35, 66, 48), s('z3', 84, 85, 200)],
+    ],
+    startId: 'a', maxDist: 20, maxSkip: 0, target: 4,
+  };
+  {
+    const blocked = { ...chainInput, refractoryEnabled: true, refractory: 2 };
+    const spec = normalizeSpec(blocked).spec;
+    const raw = solveLineage(spec);
+    assert(raw.feasible === false, '两次分裂间隔不足 2 帧间时应不可行');
+    assert(raw.refractoryBlock && raw.refractoryBlock.need >= 1,
+      `连续分裂应被不应期阻断并给出缺口: ${JSON.stringify(raw.refractoryBlock)}`);
+    const sol = presentSolution(spec, raw);
+    assert(/最早|帧/.test(sol.earliestBreakLabel) && /尚缺/.test(sol.refractoryBlock.label),
+      '阻断结果应同时含最早帧间与尚缺等待帧间');
+    log(`不应期场景 B 通过：连续分裂被阻断（${sol.refractoryBlock.label}）`);
+
+    // 关闭不应期后同一草稿可行，且不输出年龄字段
+    const freed = { ...chainInput };
+    const spec2 = normalizeSpec(freed).spec;
+    const sol2 = presentSolution(spec2, solveLineage(spec2));
+    assert(sol2.feasible === true, '关闭不应期后同草稿应可行');
+    assert(sol2.divisions === 3 && sol2.spots === undefined,
+      '关闭不应期后应允许连续分裂且不携带年龄结果');
+    log('不应期场景 B 关闭开关通过：同草稿恢复可行，结果不含年龄字段');
+  }
+}
+
 async function main() {
   let base = BASE_URL;
   if (process.env.BASE_URL) {
@@ -174,6 +268,7 @@ async function main() {
   await waitHealthy(base);
   await checkStatic(base);
   checkScenario();
+  checkRefractoryScenarios();
   log('全部烟测通过 ✔');
   if (ownServer) ownServer.kill('SIGTERM');
   if (portFile && existsSync(portFile)) rmSync(portFile);
